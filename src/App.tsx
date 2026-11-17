@@ -5,6 +5,7 @@ import { createPCell, isPCell, type PCell, type PCellType, worldPorts } from './
 import { isRouteConnection, resolvePort, samePort, type PortRef, type RouteConnection } from './models/router'
 import { calculateCSC, type CSCResult } from './models/dubins'
 import { makeWaveguidePolygon } from './models/waveguide'
+import { verifyPhotonicConnectivity } from './models/verify'
 import { exportLayoutGDS } from './models/layoutExport'
 import './App.css'
 
@@ -17,7 +18,9 @@ export default function App() {
   const [endPort, setEndPort] = useState<PortRef | null>(null)
   const [connections, setConnections] = useState<RouteConnection[]>([])
   const [minRadius, setMinRadius] = useState(10)
+  const [activeView, setActiveView] = useState<'layout' | 'verify' | 'export'>('layout')
   const fileRef = useRef<HTMLInputElement>(null)
+  const verification = useMemo(() => verifyPhotonicConnectivity(cells, connections), [cells, connections])
   const selected = cells.find(c => c.id === selectedId)
   const start = resolvePort(cells, startPort), end = resolvePort(cells, endPort)
   const routed = useMemo(() => connections.map(connection => {
@@ -98,14 +101,63 @@ export default function App() {
     } catch (error) { setMessage(`Import failed: ${error instanceof Error ? error.message : 'Invalid JSON'}`) }
     e.target.value = ''
   }
+  function jumpToIssue(subject: string) {
+    const route = connections.find(c => c.id === subject)
+    const cellId = route?.start.cellId ?? subject.split('/')[0]
+    const cell = cells.find(c => c.id === cellId)
+    if (cell) {
+      setSelectedId(cell.id)
+      setActiveView('layout')
+      setMessage(`Selected ${cell.id} from verification: ${subject}`)
+    } else {
+      setMessage(`No PCell found for ${subject}`)
+    }
+  }
+  function issueIsNavigable(subject: string) {
+    const cellId = connections.find(c => c.id === subject)?.start.cellId ?? subject.split('/')[0]
+    return cells.some(c => c.id === cellId)
+  }
   const portText = (ref: PortRef | null) => {
     const p = resolvePort(cells, ref)
     return ref && p ? `${ref.cellId}/${ref.portName} · (${p.x.toFixed(2)}, ${p.y.toFixed(2)}) µm · ${p.angle}° · W ${p.width} µm` : 'Not selected'
   }
   return <div className="app-shell">
     <header className="topbar"><div><strong className="brand">◈ WebPDA</strong><span className="subtitle">Photonic Design Automation · Ver.1</span></div><div className="header-actions"><button onClick={() => fileRef.current?.click()}>Open JSON</button><button className="primary" onClick={save}>Save JSON</button><button onClick={exportGDS}>Export GDS</button><input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={load}/></div></header>
-    <nav className="steps">{['1 Circuit','2 Layout','3 Verify','4 Export'].map((step, i) => <div className={i === 1 ? 'active' : ''} key={step}>{step}{i !== 1 && <small>Future</small>}</div>)}</nav>
-    <main className="workspace">
+    <nav className="steps" aria-label="WebPDA workflow">
+      <button type="button" className={activeView === 'layout' ? 'active' : ''} onClick={() => setActiveView('layout')} style={{cursor:'pointer',flex:1}}>2 Layout</button>
+      <button type="button" className={activeView === 'verify' ? 'active' : ''} onClick={() => setActiveView('verify')} style={{cursor:'pointer',flex:1}}>3 Verify</button>
+      <button type="button" className={activeView === 'export' ? 'active' : ''} onClick={() => setActiveView('export')} style={{cursor:'pointer',flex:1}}>4 Export</button>
+    </nav>
+    {activeView === 'verify' && <section style={{padding:'24px',overflowY:'auto',flex:1,minHeight:0}} aria-label="Photonic connectivity verification">
+      <h2>Photonic Connectivity Verification</h2>
+      <p>Logical port / CSC centerline / polygon checks only — not GDS DRC or Photonic LVS.</p>
+      <div style={{display:'flex',gap:20,flexWrap:'wrap',marginBottom:12}}>
+        <strong style={{color:'#34d399'}}>PASS: {verification.pass}</strong>
+        <strong style={{color:'#fbbf24'}}>WARNING: {verification.warnings}</strong>
+        <strong style={{color:'#f87171'}}>ERROR: {verification.errors}</strong>
+      </div>
+      <p>{verification.valid ? 'No connectivity errors detected.' : 'Connectivity errors detected. Review before exporting.'}</p>
+      <div style={{display:'grid',gap:8}}>
+        {verification.issues.length === 0 && <p>No verification issues. Add PCells or connections to begin.</p>}
+        {verification.issues.map((issue, i) => <div key={`${issue.code}-${issue.subject}-${i}`} style={{border:'1px solid #475569',borderRadius:6,padding:'10px 12px'}}>
+          <strong style={{color:issue.severity==='PASS'?'#34d399':issue.severity==='WARNING'?'#fbbf24':'#f87171'}}>{issue.severity}</strong>
+          {' '}<strong>{issue.subject}</strong> <small>({issue.code})</small>
+          <div>{issue.message}</div>
+          {issueIsNavigable(issue.subject) && <button type="button" style={{marginTop:8}} onClick={() => jumpToIssue(issue.subject)}>Show in Layout</button>}
+        </div>)}
+      </div>
+    </section>}
+    {activeView === 'export' && <section style={{padding:'24px',overflowY:'auto',flex:1,minHeight:0}} aria-label="GDSII export">
+      <h2>Export GDSII</h2>
+      <p>Export Straight, Bend90 and CSC waveguides to Layer 1/0.</p>
+      <p>Top cell: <strong>WEBPDA_TOP</strong> · DBU: 0.001 µm</p>
+      <p>PCells: <strong>{cells.length}</strong> · Routes: <strong>{connections.length}</strong></p>
+      <p>Connectivity verification: <strong>{verification.errors} errors</strong>, {verification.warnings} warnings</p>
+      {verification.errors > 0 && <p style={{color:'#f87171'}}>Connectivity errors detected. Review the Verify tab before exporting. This verification does not replace GDS DRC.</p>}
+      <button type="button" className="primary" onClick={exportGDS}>Export GDS</button>
+      <p style={{marginTop:16}}>KLayoutで読み込み、ポリゴンの接続・DRCを別途確認してください。</p>
+    </section>}
+    {activeView === 'layout' && <main className="workspace">
       <aside className="sidebar"><h2>PCell Library</h2><p className="muted">Click to add a photonic component.</p><button className="library-item" onClick={() => add('straight')}><span className="glyph">━</span><span><strong>Straight</strong><small>Waveguide</small></span><span>＋</span></button><button className="library-item" onClick={() => add('bend')}><span className="glyph">╰</span><span><strong>Bend 90°</strong><small>Quarter-circle</small></span><span>＋</span></button><hr/><h2>Instances</h2><div className="instances">{cells.map(c => <button key={c.id} className={c.id === selectedId ? 'instance selected' : 'instance'} onClick={() => setSelectedId(c.id)}>{c.id}</button>)}</div></aside>
       <LayoutCanvas cells={cells} selectedId={selectedId} onSelect={setSelectedId} onMove={(id,x,y) => update(id,{x,y})} startPort={startPort} endPort={endPort} onPortClick={selectPort} routes={routed}/>
       <aside className="properties"><h2>Properties</h2>{selected ? <><p className="selected-name">{selected.id}</p><p className="muted">{selected.type === 'straight' ? 'Straight Waveguide' : '90° Circular Bend'}</p><div className="fields">{(['x','y','rotation','width',selected.type === 'straight' ? 'length' : 'radius'] as const).map(key => <label key={key}><span>{key === 'rotation' ? 'Rotation (°)' : `${key[0].toUpperCase()+key.slice(1)} (µm)`}</span><input type="number" step={key === 'rotation' ? 90 : 0.5} min={key === 'width' ? 0.01 : key === 'length' || key === 'radius' ? 0.1 : undefined} value={selected[key]} onChange={e => { const v = Number(e.target.value); if (Number.isFinite(v) && (!['width','length','radius'].includes(key) || v > 0)) update(selected.id, { [key]: v }) }}/></label>)}</div><div className="property-actions"><button onClick={() => update(selected.id, { rotation: (selected.rotation + 90) % 360 })}>Rotate +90°</button><button className="danger" onClick={remove}>Delete</button></div><h3>Optical Ports</h3>{worldPorts(selected).map(port => <div className="port-info" key={port.name}><strong>{port.name}</strong><span>({port.x.toFixed(2)}, {port.y.toFixed(2)}) µm</span><small>Direction: {port.angle}° · Width: {port.width} µm</small></div>)}</> : <p className="muted">Select a PCell to edit its properties.</p>}
@@ -116,6 +168,6 @@ export default function App() {
       <div className="property-actions"><button disabled={!start || !end} onClick={addConnection}>Add connection</button><button onClick={() => { setStartPort(null); setEndPort(null); setMessage('Port selection cleared') }}>Clear</button></div>
       <h3>Connections ({connections.length})</h3>{routed.map(({ connection: c, path }) => <div className="port-info" key={c.id}><strong>{c.id}</strong><small>{c.start.cellId}/{c.start.portName} → {c.end.cellId}/{c.end.portName}</small><small>Width {c.width} µm · Rmin {c.minRadius} µm</small>{path ? <><small>CSC: {path.type} · Length: {path.length.toFixed(3)} µm</small><small>Polygon 1/0: {makeWaveguidePolygon(path.points, c.width)?.valid ? "valid (geometric check)" : "WARNING: invalid geometry"}</small><small>Endpoint error: {path.endPositionError.toExponential(2)} µm · Heading error: {path.endHeadingErrorDeg.toExponential(2)}°</small></> : <small style={{ color: '#f87171' }}>No valid CSC route</small>}<button type="button" onClick={() => setConnections(prev => prev.filter(r => r.id !== c.id))}>Remove</button></div>)}
       </aside>
-    </main><footer className="statusbar"><span>● {message}</span><span>STEP 3.3 · Waveguide polygon preview · No obstacle avoidance or LVS yet</span></footer>
+    </main>}<footer className="statusbar"><span>● {message}</span><span>STEP 3.5-C · Layout / Verify / Export · Not GDS DRC or Photonic LVS</span></footer>
   </div>
 }
