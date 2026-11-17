@@ -5,6 +5,7 @@ import { createPCell, isPCell, type PCell, type PCellType, worldPorts } from './
 import { isRouteConnection, resolvePort, samePort, type PortRef, type RouteConnection } from './models/router'
 import { calculateCSC, type CSCResult } from './models/dubins'
 import { makeWaveguidePolygon } from './models/waveguide'
+import { exportLayoutGDS } from './models/layoutExport'
 import './App.css'
 
 const initial: PCell[] = [{ ...createPCell('straight', 1), x: 20, y: 65 }, { ...createPCell('bend', 2), x: 65, y: 65 }]
@@ -65,6 +66,22 @@ export default function App() {
     const a = document.createElement('a'); a.href = url; a.download = 'webpda-project.json'; a.click(); URL.revokeObjectURL(url)
     setMessage('Project JSON exported')
   }
+  function exportGDS() {
+    try {
+      const bytes = exportLayoutGDS(cells, connections)
+      const buffer = new ArrayBuffer(bytes.byteLength)
+      new Uint8Array(buffer).set(bytes)
+      const url = URL.createObjectURL(new Blob([buffer], { type: 'application/octet-stream' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'webpda-layout.gds'
+      a.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setMessage(`GDSII exported: ${cells.length} PCells, ${connections.length} routes`)
+    } catch (error) {
+      setMessage(`GDS export failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    }
+  }
   async function load(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return
     try {
@@ -86,7 +103,7 @@ export default function App() {
     return ref && p ? `${ref.cellId}/${ref.portName} · (${p.x.toFixed(2)}, ${p.y.toFixed(2)}) µm · ${p.angle}° · W ${p.width} µm` : 'Not selected'
   }
   return <div className="app-shell">
-    <header className="topbar"><div><strong className="brand">◈ WebPDA</strong><span className="subtitle">Photonic Design Automation · Ver.1</span></div><div className="header-actions"><button onClick={() => fileRef.current?.click()}>Open JSON</button><button className="primary" onClick={save}>Save JSON</button><input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={load}/></div></header>
+    <header className="topbar"><div><strong className="brand">◈ WebPDA</strong><span className="subtitle">Photonic Design Automation · Ver.1</span></div><div className="header-actions"><button onClick={() => fileRef.current?.click()}>Open JSON</button><button className="primary" onClick={save}>Save JSON</button><button onClick={exportGDS}>Export GDS</button><input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={load}/></div></header>
     <nav className="steps">{['1 Circuit','2 Layout','3 Verify','4 Export'].map((step, i) => <div className={i === 1 ? 'active' : ''} key={step}>{step}{i !== 1 && <small>Future</small>}</div>)}</nav>
     <main className="workspace">
       <aside className="sidebar"><h2>PCell Library</h2><p className="muted">Click to add a photonic component.</p><button className="library-item" onClick={() => add('straight')}><span className="glyph">━</span><span><strong>Straight</strong><small>Waveguide</small></span><span>＋</span></button><button className="library-item" onClick={() => add('bend')}><span className="glyph">╰</span><span><strong>Bend 90°</strong><small>Quarter-circle</small></span><span>＋</span></button><hr/><h2>Instances</h2><div className="instances">{cells.map(c => <button key={c.id} className={c.id === selectedId ? 'instance selected' : 'instance'} onClick={() => setSelectedId(c.id)}>{c.id}</button>)}</div></aside>
