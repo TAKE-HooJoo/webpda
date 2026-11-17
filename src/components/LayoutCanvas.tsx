@@ -3,6 +3,7 @@ import type { PointerEvent, WheelEvent } from 'react'
 import { type PCell, rotatePoint, worldPorts } from '../models/photonics'
 import { type PortRef, samePort, type RouteConnection } from '../models/router'
 import type { CSCResult } from '../models/dubins'
+import { makeWaveguidePolygon } from '../models/waveguide'
 
 type Props = {
   cells: PCell[]
@@ -24,6 +25,7 @@ export default function LayoutCanvas({ cells, selectedId, onSelect, onMove, star
   const svgRef = useRef<SVGSVGElement>(null)
   const dragRef = useRef<Drag | null>(null)
   const [showPorts, setShowPorts] = useState(true)
+  const [showPolygon, setShowPolygon] = useState(true)
   const [snap, setSnap] = useState(true)
   const [view, setView] = useState<View>(INITIAL)
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null)
@@ -111,6 +113,7 @@ export default function LayoutCanvas({ cells, selectedId, onSelect, onMove, star
       <button type="button" onClick={() => zoom(1.25)} title="Zoom out">－</button>
       <button type="button" onClick={fitView} title="Fit all PCells">Fit</button>
       <button type="button" onClick={() => setView(INITIAL)} title="Reset view">Reset</button>
+      <label><input type="checkbox" checked={showPolygon} onChange={e => setShowPolygon(e.target.checked)}/> Polygon</label>
       <label><input type="checkbox" checked={showPorts} onChange={e => setShowPorts(e.target.checked)}/> Ports</label>
       <label><input type="checkbox" checked={snap} onChange={e => setSnap(e.target.checked)}/> Snap 1µm</label>
     </span></div>
@@ -118,10 +121,14 @@ export default function LayoutCanvas({ cells, selectedId, onSelect, onMove, star
       <defs><pattern id="webpda-grid" width="5" height="5" patternUnits="userSpaceOnUse"><path d="M 5 0 L 0 0 0 5" fill="none" stroke="#334155" strokeWidth="0.12"/></pattern></defs>
       <rect x={view.x} y={view.y} width={view.width} height={view.height} fill="#101c30"/>
       <rect x={view.x} y={view.y} width={view.width} height={view.height} fill="url(#webpda-grid)"/>
-      {routes.map(({ connection, path }) => path ? <g key={connection.id} pointerEvents="none">
-        <polyline points={path.points.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#0f172a" strokeWidth={Math.max(connection.width + 1.1, 1.5)} strokeLinecap="round" strokeLinejoin="round"/>
-        <polyline points={path.points.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#a78bfa" strokeWidth={Math.max(connection.width, 0.45)} strokeLinecap="round" strokeLinejoin="round"/>
-      </g> : null)}
+      {routes.map(({ connection, path }) => {
+        if (!path) return null
+        const polygon = makeWaveguidePolygon(path.points, connection.width)
+        return <g key={connection.id} pointerEvents="none">
+          {showPolygon && polygon?.valid ? <polygon points={polygon.vertices.map(p => `${p.x},${p.y}`).join(' ')} fill="#a78bfa" stroke="#c4b5fd" strokeWidth="0.08"/> : null}
+          {(!showPolygon || !polygon?.valid) && <polyline points={path.points.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke={polygon && !polygon.valid ? '#fb7185' : '#a78bfa'} strokeWidth={Math.max(connection.width, 0.45)} strokeLinecap="butt" strokeLinejoin="round"/>}
+        </g>
+      })}
       {cells.map(cell => {
         const selected = selectedId === cell.id
         const path = cell.type === 'straight' ? `M 0 0 L ${cell.length} 0` : `M 0 0 A ${cell.radius} ${cell.radius} 0 0 0 ${cell.radius} ${-cell.radius}`
