@@ -1,15 +1,24 @@
 import { useRef, useState } from 'react'
 import type { PointerEvent, WheelEvent } from 'react'
 import { type PCell, rotatePoint, worldPorts } from '../models/photonics'
+import { type PortRef, samePort } from '../models/router'
 
-type Props = { cells: PCell[]; selectedId: string | null; onSelect: (id: string | null) => void; onMove: (id: string, x: number, y: number) => void }
+type Props = {
+  cells: PCell[]
+  selectedId: string | null
+  onSelect: (id: string | null) => void
+  onMove: (id: string, x: number, y: number) => void
+  startPort: PortRef | null
+  endPort: PortRef | null
+  onPortClick: (ref: PortRef) => void
+}
 type View = { x: number; y: number; width: number; height: number }
 type Drag = { kind: 'cell'; id: string; dx: number; dy: number; pointerId: number } | { kind: 'pan'; x: number; y: number; view: View; pointerId: number }
 const INITIAL: View = { x: 0, y: 0, width: 160, height: 100 }
 const MIN_WIDTH = 5
 const MAX_WIDTH = 2000
 
-export default function LayoutCanvas({ cells, selectedId, onSelect, onMove }: Props) {
+export default function LayoutCanvas({ cells, selectedId, onSelect, onMove, startPort, endPort, onPortClick }: Props) {
   const svgRef = useRef<SVGSVGElement>(null)
   const dragRef = useRef<Drag | null>(null)
   const [showPorts, setShowPorts] = useState(true)
@@ -28,7 +37,6 @@ export default function LayoutCanvas({ cells, selectedId, onSelect, onMove }: Pr
     const result = point.matrixTransform(matrix.inverse())
     return { x: result.x, y: result.y }
   }
-
   function zoom(factor: number, anchor?: { x: number; y: number }) {
     setView(v => {
       const center = anchor ?? { x: v.x + v.width / 2, y: v.y + v.height / 2 }
@@ -37,23 +45,16 @@ export default function LayoutCanvas({ cells, selectedId, onSelect, onMove }: Pr
       return { x: center.x - (center.x - v.x) * ratio, y: center.y - (center.y - v.y) * ratio, width, height: v.height * ratio }
     })
   }
-
   function wheel(e: WheelEvent<SVGSVGElement>) {
     e.preventDefault()
     const p = position(e.clientX, e.clientY)
     zoom(e.deltaY < 0 ? 0.9 : 1.1, p ?? undefined)
   }
-
   function fitView() {
     if (!cells.length) { setView(INITIAL); return }
-    const points = cells.flatMap(cell => [
-      { x: cell.x, y: cell.y },
-      ...worldPorts(cell).map(port => ({ x: port.x, y: port.y })),
-    ])
-    const minX = Math.min(...points.map(p => p.x))
-    const maxX = Math.max(...points.map(p => p.x))
-    const minY = Math.min(...points.map(p => p.y))
-    const maxY = Math.max(...points.map(p => p.y))
+    const points = cells.flatMap(cell => [{ x: cell.x, y: cell.y }, ...worldPorts(cell).map(port => ({ x: port.x, y: port.y }))])
+    const minX = Math.min(...points.map(p => p.x)), maxX = Math.max(...points.map(p => p.x))
+    const minY = Math.min(...points.map(p => p.y)), maxY = Math.max(...points.map(p => p.y))
     const padding = 12
     const width = Math.max(20, maxX - minX + padding * 2)
     const height = Math.max(12.5, maxY - minY + padding * 2)
@@ -62,7 +63,6 @@ export default function LayoutCanvas({ cells, selectedId, onSelect, onMove }: Pr
     const fittedHeight = fittedWidth / aspect
     setView({ x: (minX + maxX) / 2 - fittedWidth / 2, y: (minY + maxY) / 2 - fittedHeight / 2, width: fittedWidth, height: fittedHeight })
   }
-
   function startCellDrag(e: PointerEvent<SVGGElement>, cell: PCell) {
     if (e.button !== 0) return
     e.stopPropagation()
@@ -72,14 +72,12 @@ export default function LayoutCanvas({ cells, selectedId, onSelect, onMove }: Pr
     dragRef.current = { kind: 'cell', id: cell.id, dx: p.x - cell.x, dy: p.y - cell.y, pointerId: e.pointerId }
     svgRef.current?.setPointerCapture(e.pointerId)
   }
-
   function startPan(e: PointerEvent<SVGSVGElement>) {
     if (e.button !== 0 && e.button !== 1) return
     onSelect(null)
     dragRef.current = { kind: 'pan', x: e.clientX, y: e.clientY, view, pointerId: e.pointerId }
     e.currentTarget.setPointerCapture(e.pointerId)
   }
-
   function move(e: PointerEvent<SVGSVGElement>) {
     const p = position(e.clientX, e.clientY)
     if (p) setCursor(p)
@@ -87,8 +85,7 @@ export default function LayoutCanvas({ cells, selectedId, onSelect, onMove }: Pr
     if (!drag || drag.pointerId !== e.pointerId) return
     if (drag.kind === 'cell') {
       if (!p) return
-      const x = p.x - drag.dx
-      const y = p.y - drag.dy
+      const x = p.x - drag.dx, y = p.y - drag.dy
       onMove(drag.id, snap ? Math.round(x) : x, snap ? Math.round(y) : y)
     } else {
       const svg = svgRef.current
@@ -98,13 +95,11 @@ export default function LayoutCanvas({ cells, selectedId, onSelect, onMove }: Pr
       setView({ ...drag.view, x: drag.view.x - (e.clientX - drag.x) * drag.view.width / bounds.width, y: drag.view.y - (e.clientY - drag.y) * drag.view.height / bounds.height })
     }
   }
-
   function endDrag(e: PointerEvent<SVGSVGElement>) {
     if (dragRef.current?.pointerId !== e.pointerId) return
     dragRef.current = null
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
   }
-
   return <section className="canvas-pane">
     <div className="pane-title"><strong>Photonic Layout</strong><span className="toolbar">
       <button type="button" onClick={() => zoom(0.8)} title="Zoom in">＋</button>
@@ -127,12 +122,19 @@ export default function LayoutCanvas({ cells, selectedId, onSelect, onMove }: Pr
             <path d={path} fill="none" stroke={selected ? '#5eead4' : '#22b8a6'} strokeWidth={Math.max(cell.width, 0.45)} strokeLinecap="round"/>
           </g>
           {showPorts && worldPorts(cell).map(port => {
+            const ref = { cellId: cell.id, portName: port.name }
+            const isStart = samePort(ref, startPort), isEnd = samePort(ref, endPort)
+            const color = isStart ? '#fbbf24' : isEnd ? '#60a5fa' : '#f59e0b'
             const dir = rotatePoint(3, 0, port.angle)
-            const tipX = port.x + dir.x
-            const tipY = port.y + dir.y
-            const wing1 = rotatePoint(-1.1, 0.55, port.angle)
-            const wing2 = rotatePoint(-1.1, -0.55, port.angle)
-            return <g key={port.name} pointerEvents="none"><circle cx={port.x} cy={port.y} r="1.1" fill="#fbbf24" stroke="#0f172a" strokeWidth="0.3"/><path d={`M ${port.x} ${port.y} L ${tipX} ${tipY} M ${tipX + wing1.x} ${tipY + wing1.y} L ${tipX} ${tipY} L ${tipX + wing2.x} ${tipY + wing2.y}`} stroke="#fbbf24" fill="none" strokeWidth="0.45"/><text x={port.x + 1.5} y={port.y - 1.8} fontSize="2.1" fill="#f8fafc">{port.name}</text></g>
+            const tipX = port.x + dir.x, tipY = port.y + dir.y
+            const wing1 = rotatePoint(-1.1, 0.55, port.angle), wing2 = rotatePoint(-1.1, -0.55, port.angle)
+            return <g key={port.name} onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onPortClick(ref) }} style={{ cursor: 'crosshair' }}>
+              <circle cx={port.x} cy={port.y} r="3" fill="transparent"/>
+              {(isStart || isEnd) && <circle cx={port.x} cy={port.y} r="2.1" fill="none" stroke={color} strokeWidth="0.55" pointerEvents="none"/>}
+              <circle cx={port.x} cy={port.y} r="1.1" fill={color} stroke="#0f172a" strokeWidth="0.3" pointerEvents="none"/>
+              <path d={`M ${port.x} ${port.y} L ${tipX} ${tipY} M ${tipX + wing1.x} ${tipY + wing1.y} L ${tipX} ${tipY} L ${tipX + wing2.x} ${tipY + wing2.y}`} stroke={color} fill="none" strokeWidth="0.45" pointerEvents="none"/>
+              <text x={port.x + 1.5} y={port.y - 1.8} fontSize="2.1" fill="#f8fafc" pointerEvents="none">{port.name}</text>
+            </g>
           })}
           <text x={cell.x} y={cell.y + 5} fontSize="2.6" fill={selected ? '#99f6e4' : '#cbd5e1'} pointerEvents="none">{cell.id}</text>
         </g>
