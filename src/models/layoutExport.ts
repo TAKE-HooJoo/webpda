@@ -1,3 +1,7 @@
+import { makeGratingCoupler } from './gratingCoupler'
+import { makeRingResonator } from './ringResonator'
+import { makeDirectionalCoupler } from './directionalCoupler'
+import { makeSBend } from './sbend'
 import type { PCell } from './photonics'
 import { rotatePoint, worldPorts } from './photonics'
 import type { RouteConnection } from './router'
@@ -25,6 +29,14 @@ function cellPoints(cell: PCell): RoutePoint[] {
     const ports = worldPorts(cell)
     return ports.map(p => ({ x: p.x, y: p.y }))
   }
+  if (cell.type === 'sbend') {
+    const geometry = makeSBend(cell.length, cell.offset, cell.width)
+    if (!geometry) throw new Error(`${cell.id}: invalid S-Bend`)
+    return geometry.points.map(point => {
+      const rotated = rotatePoint(point.x, point.y, cell.rotation)
+      return { x: cell.x + rotated.x, y: cell.y + rotated.y }
+    })
+  }
   const count = Math.max(2, Math.ceil(Math.PI * cell.radius / (2 * 0.5)))
   const points: RoutePoint[] = []
   for (let i = 0; i <= count; i++) {
@@ -41,7 +53,34 @@ function cellPoints(cell: PCell): RoutePoint[] {
 /** Collects validated polygons for every PCell and routed connection. */
 export function collectLayoutPolygons(cells: PCell[], connections: RouteConnection[]): WaveguidePolygon[] {
   const polygons: WaveguidePolygon[] = []
-  for (const cell of cells) polygons.push(...polygonParts(cellPoints(cell), cell.width, cell.id))
+  for (const cell of cells) {
+    if (cell.type === 'gc') {
+      const gc = makeGratingCoupler(cell.width, cell.length, cell.period, cell.dutyCycle, cell.teethCount, cell.gratingWidth)
+      if (!gc) throw new Error(`${cell.id}: invalid grating coupler`)
+      const transform = (p: {x:number;y:number}) => { const r=rotatePoint(p.x,p.y,cell.rotation); return {x:cell.x+r.x,y:cell.y+r.y} }
+      for (const shape of [gc.taper, ...gc.teeth]) polygons.push({layer:'1/0',width:cell.width,vertices:shape.map(transform),valid:true})
+    } else if (cell.type === 'ring') {
+      const ring = makeRingResonator(cell.width, cell.radius, cell.gap, cell.length)
+      if (!ring) throw new Error(`${cell.id}: invalid ring resonator`)
+      const transform = (p: {x:number;y:number}) => { const r = rotatePoint(p.x,p.y,cell.rotation); return {x:cell.x+r.x,y:cell.y+r.y} }
+      polygons.push(...polygonParts(ring.bus.map(transform),cell.width,`${cell.id}/bus`))
+      // GDS BOUNDARY has no holes: tessellate the annulus into independent quadrilateral sectors.
+      // A closed centerline polygon would incorrectly fill the ring interior.
+      for (let i=0; i<ring.ring.length-1; i++) {
+        const a=2*Math.PI*i/(ring.ring.length-1), b=2*Math.PI*(i+1)/(ring.ring.length-1)
+        const outer=cell.radius+cell.width/2, inner=cell.radius-cell.width/2
+        const local=[{x:ring.center.x+outer*Math.cos(a),y:ring.center.y+outer*Math.sin(a)}, {x:ring.center.x+outer*Math.cos(b),y:ring.center.y+outer*Math.sin(b)}, {x:ring.center.x+inner*Math.cos(b),y:ring.center.y+inner*Math.sin(b)}, {x:ring.center.x+inner*Math.cos(a),y:ring.center.y+inner*Math.sin(a)}]
+        polygons.push({layer:'1/0',width:cell.width,vertices:local.map(transform),valid:true})
+      }
+    } else if (cell.type === 'dc') {
+      const dc = makeDirectionalCoupler(cell.width, cell.gap, cell.couplingLength, cell.transitionLength, cell.portPitch)
+      if (!dc) throw new Error(`${cell.id}: invalid directional coupler`)
+      dc.paths.forEach((path, index) => {
+        const points = path.map(p => { const r = rotatePoint(p.x, p.y, cell.rotation); return {x: cell.x+r.x, y: cell.y+r.y} })
+        polygons.push(...polygonParts(points, cell.width, `${cell.id}/guide${index+1}`))
+      })
+    } else polygons.push(...polygonParts(cellPoints(cell), cell.width, cell.id))
+  }
   for (const route of connections) {
     const start = resolvePort(cells, route.start)
     const end = resolvePort(cells, route.end)

@@ -1,3 +1,7 @@
+import { makeGratingCoupler } from '../models/gratingCoupler'
+import { makeRingResonator } from '../models/ringResonator'
+import { makeDirectionalCoupler } from '../models/directionalCoupler'
+import { makeSBend } from '../models/sbend'
 import { useRef, useState } from 'react'
 import type { PointerEvent, WheelEvent } from 'react'
 import { type PCell, rotatePoint, worldPorts } from '../models/photonics'
@@ -58,6 +62,15 @@ export default function LayoutCanvas({ cells, selectedId, onSelect, onMove, star
     if (!cells.length) { setView(INITIAL); return }
     const points = [
       ...cells.flatMap(cell => [{ x: cell.x, y: cell.y }, ...worldPorts(cell).map(port => ({ x: port.x, y: port.y }))]),
+      ...cells.flatMap(cell => {
+        if (cell.type !== 'ring') return []
+        const geometry = makeRingResonator(cell.width, cell.radius, cell.gap, cell.length)
+        if (!geometry) return []
+        return geometry.ring.map(point => {
+          const rotated = rotatePoint(point.x, point.y, cell.rotation)
+          return { x: cell.x + rotated.x, y: cell.y + rotated.y }
+        })
+      }),
       ...routes.flatMap(route => route.path?.points ?? []),
     ]
     const minX = Math.min(...points.map(p => p.x)), maxX = Math.max(...points.map(p => p.x))
@@ -131,11 +144,26 @@ export default function LayoutCanvas({ cells, selectedId, onSelect, onMove, star
       })}
       {cells.map(cell => {
         const selected = selectedId === cell.id
-        const path = cell.type === 'straight' ? `M 0 0 L ${cell.length} 0` : `M 0 0 A ${cell.radius} ${cell.radius} 0 0 0 ${cell.radius} ${-cell.radius}`
+        const gc = cell.type === 'gc' ? makeGratingCoupler(cell.width, cell.length, cell.period, cell.dutyCycle, cell.teethCount, cell.gratingWidth) : null
+        const ring = cell.type === 'ring' ? makeRingResonator(cell.width, cell.radius, cell.gap, cell.length) : null
+        const dc = cell.type === 'dc' ? makeDirectionalCoupler(cell.width, cell.gap, cell.couplingLength, cell.transitionLength, cell.portPitch) : null
+        const sbend = cell.type === 'sbend' ? makeSBend(cell.length, cell.offset, cell.width) : null
+        const path = cell.type === 'straight'
+          ? `M 0 0 L ${cell.length} 0`
+          : cell.type === 'sbend'
+            ? (sbend ? sbend.points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ') : '')
+            : cell.type === 'bend'
+              ? `M 0 0 A ${cell.radius} ${cell.radius} 0 0 0 ${cell.radius} ${-cell.radius}`
+              : ''
+        const gcPaths = gc ? [gc.taper, ...gc.teeth].map(points => points.map((p,i) => `${i===0?'M':'L'} ${p.x} ${p.y}`).join(' ')+' Z') : []
+        const paths = gc ? gcPaths : ring ? [ring.bus.map((p,i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' '), ring.ring.map((p,i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ') + ' Z'] : dc ? dc.paths.map(points => points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')) : path ? [path] : []
         return <g key={cell.id}>
           <g transform={`translate(${cell.x} ${cell.y}) rotate(${cell.rotation})`} onPointerDown={e => startCellDrag(e, cell)} onClick={e => { e.stopPropagation(); onSelect(cell.id) }} style={{ cursor: 'grab' }}>
-            <path d={path} fill="none" stroke="transparent" strokeWidth="5"/>
-            <path d={path} fill="none" stroke={selected ? '#5eead4' : '#22b8a6'} strokeWidth={Math.max(cell.width, 0.45)} strokeLinecap="round"/>
+            {gc && showPolygon && gcPaths.map((d,i) => <path key={`gc-${i}`} d={d} fill={selected ? '#5eead4' : '#22b8a6'} stroke='none'/>)}
+            {(!gc || !showPolygon) && paths.map((d, i) => <g key={i}>
+              <path d={d} fill="none" stroke="transparent" strokeWidth="5"/>
+              <path d={d} fill="none" stroke={selected ? '#5eead4' : '#22b8a6'} strokeWidth={Math.max(cell.width, 0.45)} strokeLinecap="round"/>
+            </g>)}
           </g>
           {showPorts && worldPorts(cell).map(port => {
             const ref = { cellId: cell.id, portName: port.name }
